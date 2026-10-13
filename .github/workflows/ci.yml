@@ -1,0 +1,234 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-macos:
+    name: swift test (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: swift build
+        run: swift build
+
+      # A test process that dies mid-run reads as exit 1 with no ✘, no backtrace and no swift-testing
+      # summary: `swift test` collapses every abnormal child exit to a plain 1, and a signal takes the
+      # buffered tail of the event stream with it. What was in flight is whatever the log still lists
+      # as started but never finished. Three such deaths were an unguarded socket write raising
+      # SIGPIPE from a test origin server (see the SO_NOSIGPIPE note in Issue177IngestPrefetchTests),
+      # so nothing hangs and no time limit would have caught it.
+      - name: swift test
+        run: swift test
+
+      - name: Software VOD packet-cache regressions
+        run: |
+          bash Scripts/test-software-packet-coverage.sh
+          bash Scripts/test-software-video-packet-coverage.sh
+          bash Scripts/test-software-packet-disk-fifo.sh
+          bash Scripts/test-software-packet-read-ahead.sh
+          bash Scripts/test-software-read-admission.sh
+          bash Scripts/test-software-stored-packet.sh
+
+      - name: Partial H.264 composition-offset runtime regression
+        run: |
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          bash Scripts/test-h264-partial-composition-controls.sh
+
+      # The transport probe is a device harness and runs nowhere in CI, so nothing else would keep
+      # it compiling. A harness that stopped building is discovered by the person who needed it.
+      - name: build the transport probe (AE#377)
+        run: swift build --build-tests --package-path Probes/TransportProbe
+
+  build-tvos:
+    name: xcodebuild (tvOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build for tvOS Simulator
+        run: |
+          xcodebuild build \
+            -scheme AetherEngine \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath .build/xcode-tvos \
+            CODE_SIGNING_ALLOWED=NO
+
+      # The test target is the only place a platform gate in TEST code is ever checked. `swift test`
+      # on macOS compiles the macOS side of every `#if`, so a gate put around a helper instead of
+      # around the tests that call it looks complete there and costs nothing until someone builds
+      # for a simulator. That is how `AetherEngineTests` stopped compiling for iOS and tvOS without
+      # a single red run (2026-09-14, HLSOriginRelayTests).
+      #
+      # EXCLUDED_ARCHS because a generic simulator destination builds both slices and `libdovi.a`
+      # ships arm64 only, so the x86_64 link fails and says nothing about this repo.
+      - name: Build the tests for tvOS Simulator
+        run: |
+          xcodebuild build-for-testing \
+            -scheme AetherEngineTests \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath .build/xcode-tvos-tests \
+            EXCLUDED_ARCHS=x86_64 \
+            CODE_SIGNING_ALLOWED=NO
+
+      # The transport probe also builds as an app-hosted test bundle, because a SwiftPM test target
+      # is tool-hosted and tool-hosted testing does not exist on device destinations. That project
+      # runs nowhere in CI either, and the person who discovers it stopped building is the one who
+      # needed it that evening.
+      - name: Build the transport probe's device harness (AE#377)
+        run: |
+          xcodebuild build-for-testing \
+            -project Probes/TransportProbe/Device/TransportProbe.xcodeproj \
+            -scheme TransportProbe \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath .build/xcode-probe \
+            CODE_SIGNING_ALLOWED=NO
+
+  build-ios:
+    name: xcodebuild (iOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build for iOS Simulator
+        run: |
+          xcodebuild build \
+            -scheme AetherEngine \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath .build/xcode-ios \
+            CODE_SIGNING_ALLOWED=NO
+
+      # The other half of the gate check above; see the tvOS job for why the test target needs its
+      # own build and why x86_64 is excluded.
+      - name: Build the tests for iOS Simulator
+        run: |
+          xcodebuild build-for-testing \
+            -scheme AetherEngineTests \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath .build/xcode-ios-tests \
+            EXCLUDED_ARCHS=x86_64 \
+            CODE_SIGNING_ALLOWED=NO
+
+  # #344: the package has declared visionOS since 6.0.0 and nothing here compiled for it, so an
+  # availability list that named tvOS/iOS/macOS and then fell through to `*` broke the visionOS
+  # build silently. `*` resolves to the declared visionOS floor (1.0), so any API newer than that
+  # is a compile error on visionOS and on no other platform. Nobody here owns a Vision Pro, which
+  # makes this job the only place the platform is exercised at all.
+  build-visionos:
+    name: xcodebuild (visionOS Simulator)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build for visionOS Simulator
+        run: |
+          xcodebuild build \
+            -scheme AetherEngine \
+            -destination 'generic/platform=visionOS Simulator' \
+            -derivedDataPath .build/xcode-visionos \
+            CODE_SIGNING_ALLOWED=NO
+
+  # The Xcode 27 lane. Every job above resolves `latest-stable` on macos-15, which is Xcode 26.3,
+  # while the engine is consumed and released from Xcode 27, and Swift 6.4 rejects isolation shapes
+  # 6.3 accepted (the Sodalite test target stopped compiling on exactly that, 2026-09-16). These two
+  # jobs compile the package and both test targets against the 27 toolchain, for macOS and for the
+  # tvOS 27 SDK.
+  #
+  # They build and do not run the tests, on purpose. `xcode-27` is GitHub's preview image and runs a
+  # BETA macOS 27 (26A5406e) under Xcode 27 beta 6: measured on two attempts of the first run, Vision
+  # text recognition returns nil there and the loopback-origin tests starve (a global-queue block not
+  # scheduled within 30 s, a TLS relay request timing out), a different set of network tests each
+  # time, while all 2983 pass on macOS 27 GA on a Mac. A lane that is red for its image teaches
+  # everyone to ignore red. Run `swift test` here once a GA macOS 27 image ships, and that is also
+  # the point to move to its label; the preview label disappearing fails these jobs loudly first.
+  # This lane replaces the weekly beta SDK watcher, whose one subject (#351) the 7.0 platform floor
+  # closed.
+  build-macos-xcode27:
+    name: swift build --build-tests (macOS, Xcode 27)
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: swift build --build-tests
+        run: swift build --build-tests
+
+  build-tvos-xcode27:
+    name: xcodebuild (tvOS Simulator, Xcode 27)
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build for tvOS Simulator
+        run: |
+          xcodebuild build \
+            -scheme AetherEngine \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath .build/xcode-tvos \
+            CODE_SIGNING_ALLOWED=NO
+
+      # See the tvOS job above for why the test target needs its own build and why x86_64 is excluded.
+      - name: Build the tests for tvOS Simulator
+        run: |
+          xcodebuild build-for-testing \
+            -scheme AetherEngineTests \
+            -destination 'generic/platform=tvOS Simulator' \
+            -derivedDataPath .build/xcode-tvos-tests \
+            EXCLUDED_ARCHS=x86_64 \
+            CODE_SIGNING_ALLOWED=NO
+
+  # The docs site (aetherengine-website) validates every heading anchor at build time, but it
+  # lives in another repo and only builds AFTER a push to main, so a broken anchor ships first
+  # and is found second: `docs/api.md` linked `formats.md#dolby-vision` against a heading that
+  # slugs to `#dolby-vision-signaling`, and the site build failed on every dispatch from 6.58.0
+  # until someone looked. Same check, here, before the merge. Ubuntu on purpose: it needs no
+  # toolchain and no network, so it reports in seconds while the macOS jobs are still starting.
+  docs-links:
+    name: docs links
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate relative links and heading anchors in the published docs
+        run: python3 Scripts/check-doc-links.py

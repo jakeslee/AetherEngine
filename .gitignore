@@ -1,0 +1,56 @@
+.DS_Store
+# Match .build / Packages / .swiftpm at any depth so nested SwiftPM
+# sub-packages (e.g. Examples/DemoPlayerMac) don't accidentally commit
+# their build artifacts + checkout mirrors.
+.build/
+Packages/
+.swiftpm/
+xcuserdata/
+
+# ... with one exception: the SHARED scheme for the test target. Without it a fresh checkout has
+# no `AetherEngineTests` scheme at all, so CI cannot build test code for a simulator and the only
+# machine that can is the one where Xcode happened to create it. Re-including needs the whole
+# chain: git does not descend into an excluded directory, so each level is opened in turn.
+!/.swiftpm/
+/.swiftpm/*
+!/.swiftpm/xcode/
+/.swiftpm/xcode/*
+!/.swiftpm/xcode/xcshareddata/
+DerivedData/
+.netrc
+build/
+
+# DemoPlayerMac is a demo that should always build against FFmpegBuild's
+# current main HEAD (the same thing AetherEngine itself floats to). A
+# committed lock here goes stale and silently breaks the release-dmg build
+# when the engine starts importing a newly-added FFmpeg module (it pinned
+# a pre-avfilter FFmpegBuild for the 2.1.1 dmg). Let swift build resolve it
+# fresh each time instead. (The engine's own root Package.resolved stays
+# tracked, that pin is bumped deliberately.)
+Examples/DemoPlayerMac/Package.resolved
+
+# Generated test clips from Scripts/fetch-fixtures.sh + user-supplied
+# samples in Fixtures/user/. Both are local-only by design; the script
+# regenerates the synthetic clips on demand.
+#
+# No trailing slash, deliberately. `Fixtures/` matches only a directory, so a
+# SYMLINK named Fixtures (a worktree pointing at the primary checkout's media,
+# say) is not ignored and gets committed. Worse, git then feels free to check
+# that symlink out over the real directory in another checkout, because an
+# ignored path enjoys no protection from a checkout that wants it. That is how
+# this repo's local fixture media was destroyed once, on 2026-09-01.
+Fixtures
+
+# Internal design specs + implementation plans (superpowers flow).
+# Local-only by design; never published to the public repo.
+docs/superpowers/
+
+# Session scratch artifacts (debug fixtures, serve logs, reply drafts).
+# Local-only by design; never published.
+scratchpad/
+
+# Isolated feature worktrees.
+.worktrees/
+
+# Local git worktrees created for feature work
+.claude/worktrees/
