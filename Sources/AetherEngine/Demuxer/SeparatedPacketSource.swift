@@ -156,6 +156,18 @@ final class SeparatedPacketSource: @unchecked Sendable {
 
     func isVideoStream(_ index: Int32) -> Bool { index == Self.videoIndex }
 
+    /// Track metadata for the child audio rendition. The owner demuxer only owns the video
+    /// container, so asking it for audio tracks used to return an empty list. That hid the
+    /// rendition's channel count during renderer audio-session setup and selected the HDMI
+    /// route's maximum channel count instead of the actual source layout.
+    func audioTrackInfos() -> [TrackInfo] {
+        accessLock.lock()
+        defer { accessLock.unlock() }
+        guard let demuxer = activeDemuxer(audio),
+              let stream = demuxer.rawStream(at: audio.streamIndex) else { return [] }
+        return [demuxer.trackInfo(from: stream, index: Int(Self.audioIndex))]
+    }
+
     func readPacket(isCurrent: @Sendable () -> Bool) throws -> UnsafeMutablePointer<AVPacket>? {
         accessLock.lock()
         defer { accessLock.unlock() }

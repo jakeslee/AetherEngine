@@ -19,7 +19,7 @@ final class AudioOutput: @unchecked Sendable {
     private var processingTimer: DispatchSourceTimer?
     private let processingQueue = DispatchQueue(label: "AetherEngine.AudioOutput.processing")
 
-    /// Keep decoded look-ahead unmodified until it is within 100 ms of playback.
+    /// Process decoded look-ahead when the renderer requests more media data.
     /// The original synchronizer remains the only output clock.
     var sampleProcessor: (@Sendable (CMSampleBuffer, Bool) -> Void)? {
         get { lock.lock(); defer { lock.unlock() }; return processor }
@@ -40,18 +40,18 @@ final class AudioOutput: @unchecked Sendable {
     private func drainPending() {
         lock.lock(); defer { lock.unlock() }
         guard !stopped else { return }
-        let rate = Double(synchronizer.rate)
-        guard rate > 0 else { return }
-        let time = synchronizer.currentTime().seconds
-        guard time.isFinite else { return }
-        while let next = pending.first {
-            let pts = CMSampleBufferGetPresentationTimeStamp(next.0).seconds + presentationOffset.seconds
-            guard pts.isFinite, pts <= time + 0.1 * rate else { break }
+        // A fixed 100 ms lead can starve routes with greater output latency. Also
+        // prime while paused: the synchronizer may wait for sufficient audio
+        // before starting its clock. Native backpressure bounds that prefill.
+        // Limit each tick so a large backlog cannot monopolize the state lock.
+        var submitted = 0
+        while submitted < 64, renderer.isReadyForMoreMediaData, let next = pending.first {
             pending.removeFirst()
             pendingBytes -= next.1
             processor?(next.0, processingReset)
             processingReset = false
             renderer.enqueue(retimed(next.0))
+            submitted += 1
         }
     }
 

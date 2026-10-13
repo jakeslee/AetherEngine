@@ -977,6 +977,7 @@ public final class Demuxer: @unchecked Sendable {
     }
 
     func audioTrackInfos() -> [TrackInfo] {
+        if let separatedSource { return separatedSource.audioTrackInfos() }
         guard let ctx = formatContext else { return [] }
         var tracks: [TrackInfo] = []
         for i in 0..<Int(ctx.pointee.nb_streams) {
@@ -1176,7 +1177,7 @@ public final class Demuxer: @unchecked Sendable {
         return nil
     }
 
-    private func trackInfo(from stream: UnsafeMutablePointer<AVStream>, index: Int) -> TrackInfo {
+    func trackInfo(from stream: UnsafeMutablePointer<AVStream>, index: Int) -> TrackInfo {
         let codecpar = stream.pointee.codecpar!
         let codecName: String
         if let codec = avcodec_find_decoder(codecpar.pointee.codec_id) {

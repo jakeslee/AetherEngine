@@ -47,6 +47,11 @@ struct SeparatedPacketSourceTests {
         #expect(audio.pointee.codecpar.pointee.sample_rate > 0)
         #expect(demuxer.isVideoStream(demuxer.videoStreamIndex))
         #expect(!demuxer.isVideoStream(demuxer.audioStreamIndex))
+
+        let tracks = demuxer.audioTrackInfos()
+        #expect(tracks.map(\.id) == [Int(SeparatedPacketSource.audioIndex)])
+        #expect(tracks.first?.codec == "aac")
+        #expect(tracks.first?.channels == Int(audio.pointee.codecpar.pointee.ch_layout.nb_channels))
     }
 
     @Test("delivers both renditions interleaved in decode order")
